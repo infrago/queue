@@ -1,2 +1,2 @@
 # queue
-infra.go queue module.
+infra.Go queue module.
