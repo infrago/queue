@@ -21,6 +21,7 @@ var (
 		instances: make(map[string]*Instance, 0),
 
 		queues:   make(map[string]Queue, 0),
+		declares: make(map[string]Declare, 0),
 		filters:  make(map[string]Filter, 0),
 		handlers: make(map[string]Handler, 0),
 	}
@@ -37,6 +38,7 @@ type (
 		drivers map[string]Driver
 
 		queues   map[string]Queue
+		declares map[string]Declare
 		filters  map[string]Filter
 		handlers map[string]Handler
 
@@ -60,11 +62,12 @@ type (
 
 	Configs map[string]Config
 	Config  struct {
-		Driver  string
-		Codec   string
-		Weight  int
-		Prefix  string
-		Setting Map
+		Driver   string
+		External bool
+		Codec    string
+		Weight   int
+		Prefix   string
+		Setting  Map
 	}
 	Instance struct {
 		module  *Module
@@ -114,10 +117,10 @@ func (this *Module) Configs(config Configs) {
 	}
 }
 
-// direct
-func (this *Module) direct(conn, name string, meta *infra.Metadata) error {
+// publish 统一真实的发消息
+func (this *Module) publish(conn, name string, value Map, delays ...time.Duration) error {
 	if name == "" {
-		return errInvalidMsg
+		return ErrInvalidMsg
 	}
 	if conn == "" {
 		conn = this.hashring.Locate(name)
@@ -125,52 +128,38 @@ func (this *Module) direct(conn, name string, meta *infra.Metadata) error {
 
 	inst, ok := module.instances[conn]
 	if ok == false {
-		return errInvalidConnection
-	}
-
-	bytes, err := infra.Marshal(inst.Config.Codec, &meta)
-	if err != nil {
-		return err
-	}
-
-	realName := inst.Config.Prefix + name
-	return inst.connect.Enqueue(realName, bytes)
-
-	return errInvalidConnection
-}
-
-// enqueue
-func (this *Module) enqueue(to, name string, value Map, delays ...time.Duration) error {
-	if name == "" {
-		return errInvalidMsg
-	}
-
-	conn := infra.DEFAULT
-	if to == "" {
-		conn = this.hashring.Locate(name)
-	} else {
-		conn = to
-	}
-
-	inst, ok := module.instances[conn]
-	if ok == false {
-		return errInvalidConnection
+		return ErrInvalidConnection
 	}
 
 	if value == nil {
 		value = Map{}
 	}
 
+	meta := infra.Metadata{Name: name, Payload: value}
+
+	// 如果有预先，做一下参数处理
+	if declare, ok := this.declares[name]; ok {
+		if declare.Args != nil {
+			value := Map{}
+			res := infra.Mapping(declare.Args, meta.Payload, value, declare.Nullable, false)
+			if res == nil || res.OK() {
+				meta.Payload = value
+			}
+		}
+	}
+
 	var dataBytes []byte
 
-	//指定了to的，就走原始数据
-	if to == "" {
+	//根据配置来使用原始编码
+	//一般来说连接外部队列，可能会直接发送json出去
+	if inst.Config.External {
 		bytes, err := infra.Marshal(inst.Config.Codec, &value)
 		if err != nil {
 			return err
 		}
 		dataBytes = bytes
 	} else {
+		//内部走meta发消息
 		meta := infra.Metadata{Name: name, Payload: value}
 		bytes, err := infra.Marshal(inst.Config.Codec, &meta)
 		if err != nil {
@@ -181,7 +170,7 @@ func (this *Module) enqueue(to, name string, value Map, delays ...time.Duration)
 
 	realName := inst.Config.Prefix + name
 	if len(delays) > 0 {
-		return inst.connect.DeferredEnqueue(realName, dataBytes, delays[0])
+		return inst.connect.DeferredPublish(realName, dataBytes, delays[0])
 	}
-	return inst.connect.Enqueue(realName, dataBytes)
+	return inst.connect.Publish(realName, dataBytes)
 }

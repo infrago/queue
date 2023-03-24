@@ -6,24 +6,24 @@ import (
 	. "github.com/infrago/base"
 )
 
-func (this *Module) Enqueue(name string, values ...Map) error {
+func (this *Module) Publish(name string, values ...Map) error {
 	var value Map
 	if len(values) > 0 {
 		value = values[0]
 	}
-	return this.enqueue("", name, value)
+	return this.publish("", name, value)
 }
-func (this *Module) DeferredEnqueue(name string, value Map, delay time.Duration) error {
-	return this.enqueue("", name, value, delay)
+func (this *Module) PublishTo(conn, name string, values ...Map) error {
+	var value Map
+	if len(values) > 0 {
+		value = values[0]
+	}
+	return this.publish(conn, name, value)
 }
 
-func (this *Module) EnqueueTo(conn, name string, values ...Map) error {
-	var value Map
-	if len(values) > 0 {
-		value = values[0]
-	}
-	return this.enqueue(conn, name, value)
+func (this *Module) DeferredPublish(name string, value Map, delay time.Duration) error {
+	return this.publish("", name, value, delay)
 }
-func (this *Module) DeferredEnqueueTo(conn, name string, value Map, delay time.Duration) error {
-	return this.enqueue(conn, name, value, delay)
+func (this *Module) DeferredPublishTo(conn, name string, value Map, delay time.Duration) error {
+	return this.publish(conn, name, value, delay)
 }

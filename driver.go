@@ -26,7 +26,7 @@ type (
 		Start() error
 		Stop() error
 
-		Enqueue(name string, data []byte) error
-		DeferredEnqueue(name string, data []byte, delay time.Duration) error
+		Publish(name string, data []byte) error
+		DeferredPublish(name string, data []byte, delay time.Duration) error
 	}
 )

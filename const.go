@@ -7,8 +7,9 @@ const (
 )
 
 var (
-	errInvalidConnection = errors.New("Invalid queue connection.")
-	errInvalidMsg        = errors.New("Invalid queue msg.")
-	errInvalidWeight     = errors.New("Invalid queue connection weight.")
-	errQueueUnfinished   = errors.New("queue unfinished.")
+	ErrInvalidConnection = errors.New("Invalid queue connection.")
+	ErrInvalidMsg        = errors.New("Invalid queue msg.")
+	ErrInvalidDeclare    = errors.New("Invalid queue declare.")
+	ErrInvalidWeight     = errors.New("Invalid queue connection weight.")
+	ErrQueueUnfinished   = errors.New("queue unfinished.")
 )

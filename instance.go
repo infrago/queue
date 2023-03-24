@@ -19,13 +19,18 @@ func (this *Instance) newContext() *Context {
 // 加入payload直解
 func (this *Instance) parse(data []byte) (infra.Metadata, error) {
 	metadata := infra.Metadata{}
-	err := infra.Unmarshal(this.Config.Codec, data, &metadata)
-	if err != nil {
-		//原始数据结构，直接当Payload
+
+	if this.Config.External {
+		//外部直接解析
 		payload := Map{}
-		err = infra.Unmarshal(this.Config.Codec, data, &payload)
+		err := infra.Unmarshal(this.Config.Codec, data, &payload)
 		if err == nil {
 			metadata.Payload = payload
+		}
+	} else {
+		//内部
+		err := infra.Unmarshal(this.Config.Codec, data, &metadata)
+		if err == nil {
 		}
 	}
 
@@ -54,7 +59,8 @@ func (this *Instance) Serve(req Request) Response {
 	metadata, err := this.parse(req.Data)
 	if err == nil {
 		metadata.Attempts = req.Attempt
-		if ctx.Config.Retry >= 0 && req.Attempt > ctx.Config.Retry {
+		retry := len(ctx.Config.Retry)
+		if retry >= 0 && req.Attempt > retry {
 			metadata.Final = true
 		}
 		ctx.Metadata(metadata)
@@ -73,23 +79,24 @@ func (this *Instance) Serve(req Request) Response {
 	delay := time.Duration(0)
 
 	if body, ok := ctx.Body.(retryBody); ok {
-		if ctx.Config.Retry != 0 {
-			if ctx.Config.Retry < 0 || ctx.Config.Retry >= req.Attempt {
+		retries := len(ctx.Config.Retry)
+		if retries != 0 {
+			if retries < 0 || retries >= req.Attempt {
 				retry = true //-1表示无限重试
 			}
 
-			if len(ctx.Config.Delay) <= 0 {
+			if retries <= 0 {
 				delay = time.Second
-			} else if len(ctx.Config.Delay) == 1 {
-				delay = ctx.Config.Delay[0]
+			} else if retries == 1 {
+				delay = ctx.Config.Retry[0]
 			} else {
 				if req.Attempt <= 1 {
 					//第一次请求，重试pos应该是0
-					delay = ctx.Config.Delay[0]
+					delay = ctx.Config.Retry[0]
 				} else {
-					dls := len(ctx.Config.Delay)
+					dls := len(ctx.Config.Retry)
 					pos := (req.Attempt - 1) % dls
-					delay = ctx.Config.Delay[pos]
+					delay = ctx.Config.Retry[pos]
 				}
 			}
 			if body.delay > 0 {

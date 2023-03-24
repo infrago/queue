@@ -20,6 +20,8 @@ func (this *Module) Register(name string, value Any) {
 		this.Configs(config)
 	case Queue:
 		this.Queue(name, config)
+	case Declare:
+		this.Declare(name, config)
 	case Filter:
 		this.Filter(name, config)
 	case Handler:
@@ -38,6 +40,10 @@ func (this *Module) configure(name string, config Map) {
 
 	if driver, ok := config["driver"].(string); ok {
 		cfg.Driver = driver
+	}
+
+	if external, ok := config["external"].(bool); ok {
+		cfg.External = external
 	}
 
 	//分配权重
@@ -107,6 +113,9 @@ func (this *Module) Initialize() {
 		for key, config := range this.configs {
 			if config.Weight == 0 {
 				config.Weight = 1
+			}
+			if config.External {
+				config.Weight = -1
 			}
 			this.configs[key] = config
 		}
@@ -194,14 +203,13 @@ func (this *Module) Connect() {
 
 		inst.connect = connect
 
-		//注册队列，只有参与分布的才注册
-		//不参与的都是外部的
+		//注册队列
 		for msgName, msgConfig := range this.queues {
-			if config.Weight > 0 || msgConfig.Connect == name {
+			if msgConfig.Connect == "" || msgConfig.Connect == "*" || msgConfig.Connect == name {
 				realName := config.Prefix + msgName
 				// 注册队列
 				for i := 0; i < msgConfig.Thread; i++ {
-					info := Info{realName, msgConfig.Thread, msgConfig.Retry, msgConfig.Delay}
+					info := Info{realName, msgConfig.Thread, msgConfig.Retry}
 					if err := connect.Register(info); err != nil {
 						panic("Failed to register queue: " + err.Error())
 					}
