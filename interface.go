@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"fmt"
+	"log"
 	"time"
 
 	. "github.com/infrago/base"
@@ -245,6 +247,8 @@ func (this *Module) Launch() {
 			panic("Failed to start queue: " + err.Error())
 		}
 	}
+
+	log.Println(fmt.Sprintf("%s QUEUE is running with %d connects, %d queues.", infra.INFRAGO, len(this.instances), len(this.queues)))
 
 	this.launched = true
 }
