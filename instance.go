@@ -38,7 +38,7 @@ func (this *Instance) parse(data []byte) (infra.Metadata, error) {
 }
 
 func (this *Instance) Submit(next func()) {
-	this.module.pool.Submit(next)
+	module.pool.Submit(next)
 }
 
 func (this *Instance) Serve(req Request) Response {
@@ -49,7 +49,7 @@ func (this *Instance) Serve(req Request) Response {
 
 	ctx := this.newContext()
 	ctx.Name = name
-	if cfg, ok := this.module.queues[ctx.Name]; ok {
+	if cfg, ok := module.queues[ctx.Name]; ok {
 		ctx.Config = &cfg
 		ctx.Setting = cfg.Setting
 	}
@@ -120,7 +120,7 @@ func (this *Instance) open(ctx *Context) {
 	//队列没有预处理？
 
 	//serve拦截器
-	ctx.next(this.module.serveFilters...)
+	ctx.next(module.serveFilters...)
 	ctx.next(this.serve)
 
 	//开始执行
@@ -134,7 +134,7 @@ func (this *Instance) serve(ctx *Context) {
 	//队列没有预处理？
 
 	//request拦截器
-	ctx.next(this.module.requestFilters...)
+	ctx.next(module.requestFilters...)
 	ctx.next(this.request)
 
 	//开始执行
@@ -165,7 +165,7 @@ func (this *Instance) execute(ctx *Context) {
 	ctx.clear()
 
 	//execute拦截器
-	ctx.next(this.module.executeFilters...)
+	ctx.next(module.executeFilters...)
 	if ctx.Config.Actions != nil || len(ctx.Config.Actions) > 0 {
 		ctx.next(ctx.Config.Actions...)
 	}
@@ -182,7 +182,7 @@ func (this *Instance) response(ctx *Context) {
 	ctx.clear()
 
 	//response拦截器
-	ctx.next(this.module.responseFilters...)
+	ctx.next(module.responseFilters...)
 
 	//开始执行
 	ctx.Next()
@@ -229,7 +229,7 @@ func (this *Instance) found(ctx *Context) {
 	if ctx.Config.Found != nil {
 		ctx.next(ctx.Config.Found)
 	}
-	ctx.next(this.module.foundHandlers...)
+	ctx.next(module.foundHandlers...)
 
 	ctx.Next()
 }
@@ -241,7 +241,7 @@ func (this *Instance) error(ctx *Context) {
 	if ctx.Config.Error != nil {
 		ctx.next(ctx.Config.Error)
 	}
-	ctx.next(this.module.errorHandlers...)
+	ctx.next(module.errorHandlers...)
 
 	ctx.Next()
 }
@@ -253,7 +253,7 @@ func (this *Instance) failed(ctx *Context) {
 	if ctx.Config.Failed != nil {
 		ctx.next(ctx.Config.Failed)
 	}
-	ctx.next(this.module.failedHandlers...)
+	ctx.next(module.failedHandlers...)
 
 	ctx.Next()
 }
@@ -265,7 +265,7 @@ func (this *Instance) denied(ctx *Context) {
 	if ctx.Config.Denied != nil {
 		ctx.next(ctx.Config.Denied)
 	}
-	ctx.next(this.module.deniedHandlers...)
+	ctx.next(module.deniedHandlers...)
 
 	ctx.Next()
 }
