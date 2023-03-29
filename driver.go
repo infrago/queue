@@ -21,7 +21,7 @@ type (
 		Health() (Health, error)
 		Close() error
 
-		Register(Info) error
+		Register(string) error
 
 		Start() error
 		Stop() error

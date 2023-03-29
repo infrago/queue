@@ -211,8 +211,7 @@ func (this *Module) Connect() {
 				realName := config.Prefix + msgName
 				// 注册队列
 				for i := 0; i < msgConfig.Thread; i++ {
-					info := Info{realName, msgConfig.Thread, msgConfig.Retry}
-					if err := connect.Register(info); err != nil {
+					if err := connect.Register(realName); err != nil {
 						panic("Failed to register queue: " + err.Error())
 					}
 				}
