@@ -29,15 +29,3 @@ func DeferredPublish(name string, value Map, delay time.Duration) error {
 func DeferredPublishTo(conn, name string, value Map, delay time.Duration) error {
 	return module.publish(conn, name, value, delay)
 }
-
-func RegisterDriver(name string, driver Driver) {
-	module.RegisterDriver(name, driver)
-}
-
-func RegisterConfig(name string, cfg Config) {
-	module.RegisterConfig(name, cfg)
-}
-
-func RegisterConfigs(cfgs Configs) {
-	module.RegisterConfigs(cfgs)
-}
