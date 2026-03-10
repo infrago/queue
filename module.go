@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/infrago/infra"
 	. "github.com/infrago/base"
+	"github.com/infrago/infra"
 	"github.com/infrago/util"
 )
 
@@ -73,9 +73,9 @@ type (
 	}
 
 	msgEnvelope struct {
-		Name     string          `json:"name"`
+		Name     string         `json:"name"`
 		Metadata infra.Metadata `json:"metadata"`
-		Payload  Map             `json:"payload"`
+		Payload  Map            `json:"payload"`
 	}
 )
 
@@ -475,9 +475,10 @@ func (inst *Instance) Serve(req Request) Response {
 	if ctx.Config != nil {
 		retryCount := len(ctx.Config.Retry)
 		ctx.attempt = req.Attempt
-		if retryCount > 0 && req.Attempt >= retryCount {
-			ctx.final = true
+		if ctx.attempt <= 0 {
+			ctx.attempt = 1
 		}
+		ctx.final = queueFinal(retryCount, ctx.attempt)
 	}
 
 	if inst.Config.External {
@@ -530,7 +531,7 @@ func (inst *Instance) responseMeta(ctx *Context) (bool, time.Duration) {
 		return true, ctx.Body.(time.Duration)
 	}
 
-	if res := ctx.Result(); res != nil && res == infra.Retry {
+	if res := ctx.Result(); infra.IsRetry(res) {
 		return true, inst.nextRetryDelay(ctx)
 	}
 
@@ -553,6 +554,16 @@ func (inst *Instance) nextRetryDelay(ctx *Context) time.Duration {
 		return time.Second
 	}
 	return delay
+}
+
+func queueFinal(retryCount, attempt int) bool {
+	if retryCount <= 0 {
+		return false
+	}
+	if attempt <= 0 {
+		attempt = 1
+	}
+	return attempt > retryCount
 }
 
 func (inst *Instance) open(ctx *Context) {
@@ -665,7 +676,7 @@ func (inst *Instance) denied(ctx *Context) {
 
 func (inst *Instance) body(ctx *Context) {
 	if ctx.Body == nil {
-		if res := ctx.Result(); res != nil && res == infra.Retry {
+		if res := ctx.Result(); infra.IsRetry(res) {
 			ctx.Body = retryBody{}
 		} else {
 			ctx.Body = finishBody{}
