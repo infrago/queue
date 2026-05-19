@@ -301,9 +301,19 @@ func (m *Module) Open() {
 	}
 
 	weights := make(map[string]int, 0)
+	opened := make([]Connection, 0, len(m.configs))
+	rollback := func() {
+		for _, conn := range opened {
+			_ = conn.Close()
+		}
+		m.instances = make(map[string]*Instance, 0)
+		m.weights = nil
+		m.hashring = nil
+	}
 	for name, cfg := range m.configs {
 		driver, ok := m.drivers[cfg.Driver]
 		if !ok || driver == nil {
+			rollback()
 			panic("missing queue driver: " + cfg.Driver)
 		}
 
@@ -315,17 +325,22 @@ func (m *Module) Open() {
 
 		conn, err := driver.Connect(inst)
 		if err != nil {
+			rollback()
 			panic("failed to connect queue: " + err.Error())
 		}
 		if err := conn.Open(); err != nil {
+			_ = conn.Close()
+			rollback()
 			panic("failed to open queue: " + err.Error())
 		}
+		opened = append(opened, conn)
 
 		for queueName, qcfg := range m.queues {
 			if qcfg.Connect == "" || qcfg.Connect == "*" || qcfg.Connect == name {
 				realName := cfg.Prefix + queueName
 				for i := 0; i < qcfg.Thread; i++ {
 					if err := conn.Register(realName); err != nil {
+						rollback()
 						panic("failed to register queue: " + err.Error())
 					}
 				}
@@ -350,10 +365,15 @@ func (m *Module) Start() {
 	if m.started {
 		return
 	}
+	started := make([]Connection, 0, len(m.instances))
 	for _, inst := range m.instances {
 		if err := inst.conn.Start(); err != nil {
+			for i := len(started) - 1; i >= 0; i-- {
+				_ = started[i].Stop()
+			}
 			panic("failed to start queue: " + err.Error())
 		}
+		started = append(started, inst.conn)
 	}
 	fmt.Printf("infrago queue module is running with %d connections, %d queues.\n", len(m.instances), len(m.queues))
 	m.started = true
@@ -417,6 +437,8 @@ func (m *Module) publish(connName, name string, value Map, delays ...time.Durati
 		res := infra.Mapping(dec.Args, value, mapped, dec.Nullable, false)
 		if res == nil || res.OK() {
 			value = mapped
+		} else {
+			return fmt.Errorf("invalid queue payload %q: %s", name, res.Error())
 		}
 	}
 
@@ -520,6 +542,10 @@ func (inst *Instance) Serve(req Request) Response {
 }
 
 func (inst *Instance) responseMeta(ctx *Context) (bool, time.Duration) {
+	if ctx.final {
+		return false, 0
+	}
+
 	if body, ok := ctx.Body.(retryBody); ok {
 		if body.delay > 0 {
 			return true, body.delay

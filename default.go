@@ -23,8 +23,10 @@ type (
 	defaultConnection struct {
 		mutex    sync.RWMutex
 		running  bool
+		stopping bool
 		instance *Instance
 		queues   map[string]chan *defaultMessage
+		names    []string
 		done     chan struct{}
 		wg       sync.WaitGroup
 	}
@@ -40,6 +42,7 @@ func (d *defaultDriver) Connect(inst *Instance) (Connection, error) {
 	return &defaultConnection{
 		instance: inst,
 		queues:   make(map[string]chan *defaultMessage, 0),
+		names:    make([]string, 0),
 		done:     make(chan struct{}),
 	}, nil
 }
@@ -53,6 +56,7 @@ func (c *defaultConnection) Register(name string) error {
 	if _, ok := c.queues[name]; !ok {
 		c.queues[name] = make(chan *defaultMessage, 256)
 	}
+	c.names = append(c.names, name)
 	return nil
 }
 
@@ -60,17 +64,20 @@ func (c *defaultConnection) Start() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.running {
+	if c.running || c.stopping {
 		return errQueueRunning
 	}
-	for _, ch := range c.queues {
-		queueCh := ch
+	for _, name := range c.names {
+		queueCh := c.queues[name]
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
 			for {
 				select {
 				case msg := <-queueCh:
+					if msg == nil {
+						continue
+					}
 					req := Request{
 						Name:      msg.name,
 						Data:      msg.data,
@@ -96,30 +103,43 @@ func (c *defaultConnection) Stop() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if !c.running {
+	if !c.running || c.stopping {
 		return errQueueNotRunning
 	}
 	close(c.done)
+	c.stopping = true
+	c.mutex.Unlock()
+
 	c.wg.Wait()
+
+	c.mutex.Lock()
 	c.done = make(chan struct{})
 	c.running = false
+	c.stopping = false
 	return nil
 }
 
 func (c *defaultConnection) publish(msg *defaultMessage, delay time.Duration) {
 	c.mutex.RLock()
 	ch := c.queues[msg.name]
+	done := c.done
 	c.mutex.RUnlock()
 	if ch == nil {
 		return
 	}
 	if delay > 0 {
 		time.AfterFunc(delay, func() {
-			ch <- msg
+			select {
+			case ch <- msg:
+			case <-done:
+			}
 		})
 		return
 	}
-	ch <- msg
+	select {
+	case ch <- msg:
+	case <-done:
+	}
 }
 
 func (c *defaultConnection) Publish(name string, data []byte) error {
