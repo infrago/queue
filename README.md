@@ -56,4 +56,8 @@ driver = "default"
 ## 说明
 
 - `setting` 一般用于向具体驱动透传专用参数
+- 默认内存驱动支持 `setting.buffer`，也可通过单个 Queue 的 `Setting["buffer"]` 覆盖
+- 默认内存驱动支持 `setting.blocking_publish` 和 `setting.publish_timeout`
+- Queue 的 `Setting["dead"]` / `dead_letter` / `dlq` 可配置最终失败消息转发队列
+- 业务处理 panic 会被捕获为可重试失败，`Context.Context()` 可感知停止取消
 - 多实例配置请参考模块源码中的 Config/configure 处理逻辑

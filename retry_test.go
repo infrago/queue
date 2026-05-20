@@ -3,6 +3,8 @@ package queue
 import (
 	"testing"
 	"time"
+
+	"github.com/infrago/infra"
 )
 
 func TestQueueFinal(t *testing.T) {
@@ -67,9 +69,10 @@ func TestResponseMetaDoesNotRetryAfterFinalAttempt(t *testing.T) {
 
 func TestDefaultConnectionKeepsThreadRegistrations(t *testing.T) {
 	conn := &defaultConnection{
-		queues: make(map[string]chan *defaultMessage),
-		names:  make([]string, 0),
-		done:   make(chan struct{}),
+		queues:  make(map[string]chan *defaultMessage),
+		workers: make(map[string]int),
+		timers:  make(map[*time.Timer]struct{}),
+		done:    make(chan struct{}),
 	}
 
 	if err := conn.Register("jobs"); err != nil {
@@ -82,8 +85,68 @@ func TestDefaultConnectionKeepsThreadRegistrations(t *testing.T) {
 	if len(conn.queues) != 1 {
 		t.Fatalf("queues=%d, want 1", len(conn.queues))
 	}
-	if len(conn.names) != 2 {
-		t.Fatalf("workers=%d, want 2", len(conn.names))
+	if conn.workers["jobs"] != 2 {
+		t.Fatalf("workers=%d, want 2", conn.workers["jobs"])
+	}
+}
+
+func TestDefaultConnectionPublishReturnsWhenQueueIsFull(t *testing.T) {
+	conn := &defaultConnection{
+		queues:  make(map[string]chan *defaultMessage),
+		workers: make(map[string]int),
+		timers:  make(map[*time.Timer]struct{}),
+		done:    make(chan struct{}),
+	}
+	if err := conn.Register("jobs"); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < cap(conn.queues["jobs"]); i++ {
+		if err := conn.Publish("jobs", nil); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if err := conn.Publish("jobs", nil); err != errQueueFull {
+		t.Fatalf("publish full error=%v, want %v", err, errQueueFull)
+	}
+}
+
+func TestDefaultConnectionUsesConfiguredBuffer(t *testing.T) {
+	conn := &defaultConnection{
+		instance: &Instance{Setting: map[string]any{"buffer": 3}},
+		queues:   make(map[string]chan *defaultMessage),
+		workers:  make(map[string]int),
+		timers:   make(map[*time.Timer]struct{}),
+		done:     make(chan struct{}),
+	}
+	if err := conn.Register("jobs"); err != nil {
+		t.Fatal(err)
+	}
+	if cap(conn.queues["jobs"]) != 3 {
+		t.Fatalf("buffer=%d, want 3", cap(conn.queues["jobs"]))
+	}
+}
+
+func TestDefaultConnectionPublishWaitSettings(t *testing.T) {
+	conn := &defaultConnection{
+		instance: &Instance{Setting: map[string]any{
+			"blocking_publish": "true",
+			"publish_timeout":  "25ms",
+		}},
+	}
+	wait, timeout := conn.publishWait()
+	if !wait || timeout != 25*time.Millisecond {
+		t.Fatalf("wait=%v timeout=%v", wait, timeout)
+	}
+}
+
+func TestDeadLetterName(t *testing.T) {
+	ctx := &Context{Config: &Queue{Setting: map[string]any{"dead_letter": "jobs.dead"}}}
+	if got := deadLetterName(ctx); got != "jobs.dead" {
+		t.Fatalf("dead=%q", got)
+	}
+	if !shouldDeadLetter(ctx, infra.Fail) {
+		t.Fatal("expected failed result to dead letter")
 	}
 }
 
@@ -123,10 +186,31 @@ func TestModuleStartRollsBackStartedConnections(t *testing.T) {
 	mod.Start()
 }
 
+func TestModuleCloseStopsRunningConnections(t *testing.T) {
+	conn := &testConnection{}
+	mod := &Module{
+		opened:  true,
+		started: true,
+		instances: map[string]*Instance{
+			"default": {conn: conn},
+		},
+	}
+
+	mod.Close()
+
+	if !conn.stopped || !conn.closed {
+		t.Fatalf("stopped=%v closed=%v, want both", conn.stopped, conn.closed)
+	}
+	if mod.started || mod.opened {
+		t.Fatalf("started=%v opened=%v, want false", mod.started, mod.opened)
+	}
+}
+
 type testConnection struct {
 	state   *testStartState
 	started bool
 	stopped bool
+	closed  bool
 }
 
 type testStartState struct {
@@ -134,8 +218,11 @@ type testStartState struct {
 	failOn int
 }
 
-func (c *testConnection) Open() error                                         { return nil }
-func (c *testConnection) Close() error                                        { return nil }
+func (c *testConnection) Open() error { return nil }
+func (c *testConnection) Close() error {
+	c.closed = true
+	return nil
+}
 func (c *testConnection) Register(string) error                               { return nil }
 func (c *testConnection) Publish(string, []byte) error                        { return nil }
 func (c *testConnection) DeferredPublish(string, []byte, time.Duration) error { return nil }

@@ -1,16 +1,19 @@
 package queue
 
 import (
+	"context"
 	"time"
 
-	"github.com/infrago/infra"
 	. "github.com/infrago/base"
+	"github.com/infrago/infra"
 )
 
 type (
 	Context struct {
 		inst *Instance
 		*infra.Meta
+		context context.Context
+		cancel  context.CancelFunc
 
 		index int
 		nexts []ctxFunc
@@ -83,6 +86,17 @@ func (ctx *Context) Attempts() int {
 
 func (ctx *Context) Final() bool {
 	return ctx.final
+}
+
+func (ctx *Context) Context() context.Context {
+	if ctx.context == nil {
+		return context.Background()
+	}
+	return ctx.context
+}
+
+func (ctx *Context) Done() <-chan struct{} {
+	return ctx.Context().Done()
 }
 
 func (ctx *Context) Finish() {

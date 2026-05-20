@@ -1,8 +1,10 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -322,16 +324,17 @@ func (m *Module) Open() {
 			Config:  cfg,
 			Setting: cfg.Setting,
 		}
+		inst.resetContext()
 
 		conn, err := driver.Connect(inst)
 		if err != nil {
 			rollback()
-			panic("failed to connect queue: " + err.Error())
+			panic(fmt.Sprintf("failed to connect queue connection %q with driver %q: %s", name, cfg.Driver, err.Error()))
 		}
 		if err := conn.Open(); err != nil {
 			_ = conn.Close()
 			rollback()
-			panic("failed to open queue: " + err.Error())
+			panic(fmt.Sprintf("failed to open queue connection %q with driver %q: %s", name, cfg.Driver, err.Error()))
 		}
 		opened = append(opened, conn)
 
@@ -341,7 +344,7 @@ func (m *Module) Open() {
 				for i := 0; i < qcfg.Thread; i++ {
 					if err := conn.Register(realName); err != nil {
 						rollback()
-						panic("failed to register queue: " + err.Error())
+						panic(fmt.Sprintf("failed to register queue %q on connection %q: %s", realName, name, err.Error()))
 					}
 				}
 			}
@@ -366,12 +369,15 @@ func (m *Module) Start() {
 		return
 	}
 	started := make([]Connection, 0, len(m.instances))
-	for _, inst := range m.instances {
+	names := sortedInstanceNames(m.instances)
+	for _, name := range names {
+		inst := m.instances[name]
+		inst.resetContext()
 		if err := inst.conn.Start(); err != nil {
 			for i := len(started) - 1; i >= 0; i-- {
 				_ = started[i].Stop()
 			}
-			panic("failed to start queue: " + err.Error())
+			panic(fmt.Sprintf("failed to start queue connection %q: %s", name, err.Error()))
 		}
 		started = append(started, inst.conn)
 	}
@@ -385,7 +391,10 @@ func (m *Module) Stop() {
 	if !m.started {
 		return
 	}
-	for _, inst := range m.instances {
+	names := sortedInstanceNames(m.instances)
+	for i := len(names) - 1; i >= 0; i-- {
+		inst := m.instances[names[i]]
+		inst.cancelContext()
 		_ = inst.conn.Stop()
 	}
 	m.started = false
@@ -397,7 +406,20 @@ func (m *Module) Close() {
 	if !m.opened {
 		return
 	}
-	for _, inst := range m.instances {
+	if m.started {
+		names := sortedInstanceNames(m.instances)
+		for i := len(names) - 1; i >= 0; i-- {
+			inst := m.instances[names[i]]
+			if inst.conn != nil {
+				inst.cancelContext()
+				_ = inst.conn.Stop()
+			}
+		}
+		m.started = false
+	}
+	names := sortedInstanceNames(m.instances)
+	for i := len(names) - 1; i >= 0; i-- {
+		inst := m.instances[names[i]]
 		if inst.conn != nil {
 			_ = inst.conn.Close()
 			inst.conn = nil
@@ -473,15 +495,19 @@ func (inst *Instance) Submit(next func()) {
 	go next()
 }
 
-func (inst *Instance) Serve(req Request) Response {
+func (inst *Instance) Serve(req Request) (resp Response) {
 	name := req.Name
 	if inst.Config.Prefix != "" && len(name) >= len(inst.Config.Prefix) && name[:len(inst.Config.Prefix)] == inst.Config.Prefix {
 		name = name[len(inst.Config.Prefix):]
 	}
 
+	reqCtx, cancel := context.WithCancel(inst.context())
+	defer cancel()
 	ctx := &Context{
 		inst:    inst,
 		Meta:    infra.NewMeta(),
+		context: reqCtx,
+		cancel:  cancel,
 		nexts:   make([]ctxFunc, 0),
 		Setting: Map{},
 		Value:   Map{},
@@ -503,10 +529,14 @@ func (inst *Instance) Serve(req Request) Response {
 		ctx.final = queueFinal(retryCount, ctx.attempt)
 	}
 
+	decodeFailed := false
 	if inst.Config.External {
 		payload := Map{}
 		if err := infra.Unmarshal(inst.Config.Codec, req.Data, &payload); err == nil {
 			ctx.Value = payload
+		} else {
+			decodeFailed = true
+			ctx.Result(infra.Invalid.With(err.Error()))
 		}
 	} else {
 		env := msgEnvelope{}
@@ -517,7 +547,14 @@ func (inst *Instance) Serve(req Request) Response {
 			}
 			if env.Name != "" {
 				ctx.Name = env.Name
+				if cfg, ok := module.queues[ctx.Name]; ok {
+					ctx.Config = &cfg
+					ctx.Setting = cfg.Setting
+				}
 			}
+		} else {
+			decodeFailed = true
+			ctx.Result(infra.Invalid.With(err.Error()))
 		}
 	}
 
@@ -528,17 +565,33 @@ func (inst *Instance) Serve(req Request) Response {
 		"attempt":    ctx.Attempts(),
 	}))
 
-	inst.open(ctx)
+	defer func() {
+		if rec := recover(); rec != nil {
+			ctx.Result(infra.RetryResult(infra.Fail, fmt.Sprintf("panic: %v", rec)))
+			ctx.Body = retryBody{}
+		}
 
-	retry, delay := inst.responseMeta(ctx)
-	if retry {
-		span.End(infra.Retry)
-	} else if res := ctx.Result(); res != nil && res.Fail() {
-		span.End(res)
-	} else {
-		span.End()
+		retry, delay := inst.responseMeta(ctx)
+		resp = Response{Retry: retry, Delay: delay}
+		res := ctx.Result()
+		if !retry && shouldDeadLetter(ctx, res) {
+			inst.dead(ctx, req.Data)
+		}
+		if retry {
+			span.End(infra.Retry)
+		} else if res != nil && res.Fail() {
+			span.End(res)
+		} else {
+			span.End()
+		}
+	}()
+
+	if decodeFailed {
+		ctx.Body = finishBody{}
+		return
 	}
-	return Response{Retry: retry, Delay: delay}
+	inst.open(ctx)
+	return
 }
 
 func (inst *Instance) responseMeta(ctx *Context) (bool, time.Duration) {
@@ -590,6 +643,67 @@ func queueFinal(retryCount, attempt int) bool {
 		attempt = 1
 	}
 	return attempt > retryCount
+}
+
+func sortedInstanceNames(instances map[string]*Instance) []string {
+	names := make([]string, 0, len(instances))
+	for name := range instances {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func deadLetterName(ctx *Context) string {
+	if ctx == nil || ctx.Config == nil || ctx.Config.Setting == nil {
+		return ""
+	}
+	for _, key := range []string{"dead", "dead_letter", "dlq"} {
+		if name, ok := ctx.Config.Setting[key].(string); ok && name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func (inst *Instance) dead(ctx *Context, raw []byte) {
+	name := deadLetterName(ctx)
+	if name == "" || inst.conn == nil {
+		return
+	}
+	payload := ctx.Value
+	if len(payload) == 0 && len(raw) > 0 {
+		payload = Map{"raw": raw}
+	}
+	var data []byte
+	var err error
+	if inst.Config.External {
+		data, err = infra.Marshal(inst.Config.Codec, payload)
+	} else {
+		data, err = infra.Marshal(inst.Config.Codec, msgEnvelope{
+			Name:     name,
+			Metadata: ctx.Metadata(),
+			Payload:  payload,
+		})
+	}
+	if err != nil {
+		fmt.Printf("infrago queue dead letter encode failed on %s: %v\n", ctx.Name, err)
+		return
+	}
+	if err := inst.conn.Publish(inst.Config.Prefix+name, data); err != nil {
+		fmt.Printf("infrago queue dead letter publish failed on %s -> %s: %v\n", ctx.Name, name, err)
+	}
+}
+
+func shouldDeadLetter(ctx *Context, res Res) bool {
+	if deadLetterName(ctx) == "" {
+		return false
+	}
+	if res != nil && res.Fail() {
+		return true
+	}
+	_, retried := ctx.Body.(retryBody)
+	return retried && ctx.final
 }
 
 func (inst *Instance) open(ctx *Context) {
